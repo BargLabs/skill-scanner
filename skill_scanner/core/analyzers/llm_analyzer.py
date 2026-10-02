@@ -115,6 +115,7 @@ class LLMProvider(str, Enum):
     - aws-bedrock: AWS Bedrock models
     - gcp-vertex: Google Cloud Vertex AI
     - ollama: Local Ollama models
+    - apple-fm: On-device Apple Foundation Models
     - openrouter: OpenRouter API
     - orcarouter: OrcaRouter API
     """
@@ -127,6 +128,7 @@ class LLMProvider(str, Enum):
     AWS_BEDROCK = "aws-bedrock"
     GCP_VERTEX = "gcp-vertex"
     OLLAMA = "ollama"
+    APPLE_FM = "apple-fm"
     OPENROUTER = "openrouter"
     ORCAROUTER = "orcarouter"
 
@@ -346,6 +348,7 @@ class LLMAnalyzer(BaseAnalyzer):
                 "aws-bedrock": "bedrock/us.anthropic.claude-sonnet-5-5",
                 "gcp-vertex": "vertex_ai/gemini-1.5-pro",
                 "ollama": "ollama/llama2",
+                "apple-fm": "apple-fm/system",
                 "openrouter": "openrouter/openai/gpt-4",
                 "orcarouter": "orcarouter/anthropic/claude-sonnet-5",
             }
@@ -367,6 +370,10 @@ class LLMAnalyzer(BaseAnalyzer):
             llm_user=llm_user,
         )
         self.provider_config.validate()
+        if getattr(self.provider_config, "is_apple_fm", False) is True:
+            from .apple_fm import require_apple_fm_sdk
+
+            require_apple_fm_sdk()
 
         self.request_handler = LLMRequestHandler(
             provider_config=self.provider_config,

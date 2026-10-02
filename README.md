@@ -128,6 +128,9 @@ pip install cisco-ai-skill-scanner[vertex]
 # Azure OpenAI support
 pip install cisco-ai-skill-scanner[azure]
 
+# On-device Apple Foundation Models (macOS 26+, Apple Intelligence)
+pip install "apple-fm-sdk>=0.2.1,<0.3"   # builds from source; needs full Xcode
+
 # All cloud providers
 pip install cisco-ai-skill-scanner[all]
 ```
@@ -144,6 +147,10 @@ pip install cisco-ai-skill-scanner[all]
 # For LLM analyzer and Meta-analyzer
 export SKILL_SCANNER_LLM_API_KEY="your_api_key"
 export SKILL_SCANNER_LLM_MODEL="claude-sonnet-5-5"
+
+# On-device Apple Foundation Model (no API key). Semantic scans only.
+# Behavioral alignment prompts exceed the on-device context window.
+# export SKILL_SCANNER_LLM_MODEL="apple-fm/system"
 # Optional: disabled, minimal, low, medium, high, xhigh, or max
 export SKILL_SCANNER_LLM_REASONING_EFFORT="low"
 

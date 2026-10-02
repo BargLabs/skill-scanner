@@ -714,6 +714,10 @@ class MetaAnalysisTruncatedError(LLMResponseTruncatedError):
     """Raised when the provider reports an output-token truncation."""
 
 
+class MetaAnalysisContextWindowError(Exception):
+    """The on-device model cannot fit this meta-analysis prompt."""
+
+
 class MetaAnalysisParseError(ValueError):
     """Raised when a meta-analysis response cannot be parsed as valid JSON."""
 
@@ -817,6 +821,8 @@ class MetaAnalyzer(BaseAnalyzer):
             or os.getenv("SKILL_SCANNER_LLM_API_KEY")  # Scanner-wide
         )
         configured_model = model or os.getenv("SKILL_SCANNER_META_LLM_MODEL") or os.getenv("SKILL_SCANNER_LLM_MODEL")
+        if not configured_model and self.provider == "apple-fm":
+            configured_model = "apple-fm/system"
         self.model: str = configured_model or (
             "orcarouter/anthropic/claude-sonnet-5" if self.provider == "orcarouter" else DEFAULT_LLM_MODEL
         )
@@ -842,11 +848,13 @@ class MetaAnalyzer(BaseAnalyzer):
         # analyzer's normalization and request-parameter handling so the meta
         # analyzer receives the same key and default endpoint.
         self.provider_config: ProviderConfig | None = None
+        _openai_compatible = self.provider in {"openai", "openai-compatible", "custom-openai"}
         _wants_provider_config = (
             self.provider == "orcarouter"
             or self.model.lower().startswith("orcarouter/")
             or self.provider == "bedrock-mantle"
             or self.model.lower().startswith("bedrock-mantle/")
+            or (not _openai_compatible and (self.provider == "apple-fm" or self.model.lower().startswith("apple-fm/")))
         )
         if _wants_provider_config:
             self.provider_config = ProviderConfig(
@@ -875,9 +883,27 @@ class MetaAnalyzer(BaseAnalyzer):
         self.is_ollama = bool(self.model and self.model.lower().startswith("ollama/"))
         if self.is_ollama:
             self.base_url = resolve_ollama_base_url(self.base_url)
+        self.is_apple_fm = bool(
+            getattr(self.provider_config, "is_apple_fm", False) is True
+            or (
+                self.provider not in {"openai", "openai-compatible", "custom-openai"}
+                and (self.provider == "apple-fm" or (self.model and self.model.lower().startswith("apple-fm/")))
+            )
+        )
+
+        if self.is_apple_fm:
+            from .apple_fm import require_apple_fm_sdk
+
+            require_apple_fm_sdk()
 
         # Validate configuration
-        if not self.api_key and not self.is_bedrock and not self.is_bedrock_mantle and not self.is_ollama:
+        if (
+            not self.api_key
+            and not self.is_bedrock
+            and not self.is_bedrock_mantle
+            and not self.is_ollama
+            and not self.is_apple_fm
+        ):
             raise ValueError(
                 "Meta-Analyzer LLM API key not configured. "
                 "Set SKILL_SCANNER_META_LLM_API_KEY or SKILL_SCANNER_LLM_API_KEY environment variable."
@@ -1319,27 +1345,16 @@ Respond with JSON containing your analysis following the required schema."""
             response = await self._make_llm_request(self.system_prompt, user_prompt)
         except MetaAnalysisTruncatedError:
             if len(indices) > 1:
-                midpoint = len(indices) // 2
-                logger.warning(
-                    "Meta-analysis response truncated for findings %d-%d; retrying as %d and %d findings",
-                    indices[0],
-                    indices[-1],
-                    midpoint,
-                    len(indices) - midpoint,
+                return await self._bisect_batch(
+                    skill=skill,
+                    findings=findings,
+                    indices=indices,
+                    skill_context=skill_context,
+                    analyzers_used=analyzers_used,
+                    start_tag=start_tag,
+                    end_tag=end_tag,
+                    reason="response truncated",
                 )
-                narrowed = MetaAnalysisResult()
-                for narrowed_indices in (indices[:midpoint], indices[midpoint:]):
-                    narrowed_result = await self._analyze_batch(
-                        skill=skill,
-                        findings=findings,
-                        indices=narrowed_indices,
-                        skill_context=skill_context,
-                        analyzers_used=analyzers_used,
-                        start_tag=start_tag,
-                        end_tag=end_tag,
-                    )
-                    self._merge_batch_result(narrowed, narrowed_result)
-                return narrowed
             return self._degraded_batch_result(
                 findings,
                 indices,
@@ -1348,6 +1363,34 @@ Respond with JSON containing your analysis following the required schema."""
                 failure_diagnostic={
                     "outer_error_code": "META_BATCH_TRUNCATED",
                     "inner_error_code": "META_RESPONSE_TRUNCATED",
+                    "request_sha256": request_sha256,
+                    "repair_attempted": 0,
+                    "repair_succeeded": 0,
+                },
+            )
+        except MetaAnalysisContextWindowError:
+            if len(indices) > 1:
+                return await self._bisect_batch(
+                    skill=skill,
+                    findings=findings,
+                    indices=indices,
+                    skill_context=skill_context,
+                    analyzers_used=analyzers_used,
+                    start_tag=start_tag,
+                    end_tag=end_tag,
+                    reason="prompt exceeded the on-device context window",
+                )
+            return self._degraded_batch_result(
+                findings,
+                indices,
+                code="META_BATCH_CONTEXT_WINDOW",
+                message=(
+                    "The on-device Apple Foundation Model context window cannot fit "
+                    "this finding together with the skill context; the finding was retained unchanged."
+                ),
+                failure_diagnostic={
+                    "outer_error_code": "META_BATCH_CONTEXT_WINDOW",
+                    "inner_error_code": "APPLE_FM_CONTEXT_WINDOW",
                     "request_sha256": request_sha256,
                     "repair_attempted": 0,
                     "repair_succeeded": 0,
@@ -1404,6 +1447,42 @@ Respond with JSON containing your analysis following the required schema."""
             )
 
         return self._normalize_batch_result(batch_result, findings, indices)
+
+    async def _bisect_batch(
+        self,
+        skill: Skill,
+        findings: list[Finding],
+        indices: list[int],
+        skill_context: str,
+        analyzers_used: list[str],
+        start_tag: str,
+        end_tag: str,
+        *,
+        reason: str,
+    ) -> MetaAnalysisResult:
+        """Retry one batch as two smaller batches. A single finding is not split."""
+        midpoint = len(indices) // 2
+        logger.warning(
+            "Meta-analysis %s for findings %d-%d; retrying as %d and %d findings",
+            reason,
+            indices[0],
+            indices[-1],
+            midpoint,
+            len(indices) - midpoint,
+        )
+        narrowed = MetaAnalysisResult()
+        for narrowed_indices in (indices[:midpoint], indices[midpoint:]):
+            narrowed_result = await self._analyze_batch(
+                skill=skill,
+                findings=findings,
+                indices=narrowed_indices,
+                skill_context=skill_context,
+                analyzers_used=analyzers_used,
+                start_tag=start_tag,
+                end_tag=end_tag,
+            )
+            self._merge_batch_result(narrowed, narrowed_result)
+        return narrowed
 
     def _normalize_batch_result(
         self,
@@ -1887,6 +1966,31 @@ Each recommendation, if any, must contain exactly `priority` (integer 1–3), `t
             {"role": "user", "content": user_prompt},
         ]
 
+        if self.is_apple_fm:
+            from .apple_fm import AppleFMContextWindowError
+
+            config = self.provider_config
+            if config is None or getattr(config, "is_apple_fm", False) is not True:
+                config = ProviderConfig(model=self.model, api_key=None, provider="apple-fm")
+            handler = LLMRequestHandler(
+                config,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+                max_retries=self.max_retries,
+                timeout=self.timeout,
+                reasoning_effort=self.reasoning_effort,
+            )
+            # Meta validates its own JSON contract. The on-device model has no
+            # json_schema response format, so leave the prompt unconstrained.
+            handler.response_schema = None
+            try:
+                content = await handler.make_request(messages, context="meta-analysis")
+            except AppleFMContextWindowError as exc:
+                _add_token_usage(self._llm_usage, handler.last_usage)
+                raise MetaAnalysisContextWindowError(str(exc)) from exc
+            _add_token_usage(self._llm_usage, handler.last_usage)
+            return content
+
         api_params: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
@@ -1934,8 +2038,6 @@ Each recommendation, if any, must contain exactly `priority` (integer 1–3), `t
             # LiteLLM cannot sign a body it builds itself, so the mantle route goes
             # through the request handler that owns that client rather than through
             # acompletion.
-            from .llm_request_handler import LLMRequestHandler
-
             handler = LLMRequestHandler(
                 self.provider_config,
                 max_tokens=self.max_tokens,

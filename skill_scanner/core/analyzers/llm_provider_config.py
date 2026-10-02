@@ -204,6 +204,18 @@ class ProviderConfig:
             model_lower.startswith("vertex_ai/") or "vertex" in model_lower
         )
         self.is_ollama = not self.is_openai_compatible and model_lower.startswith("ollama/")
+        self.is_apple_fm = not self.is_openai_compatible and (
+            self.provider == "apple-fm" or model_lower.startswith("apple-fm/")
+        )
+        # Mantle is dispatched before Apple FM. A mixed selection would send
+        # skill content to the remote SigV4 endpoint while the caller asked
+        # for the on-device model.
+        if self.is_apple_fm and self.is_bedrock_mantle:
+            raise ValueError(
+                "Apple Foundation Models run on-device and cannot be combined with a "
+                "Bedrock Mantle model. Use provider 'apple-fm' with an apple-fm/ model, "
+                "or a bedrock-mantle model without the apple-fm provider."
+            )
         self.is_openrouter = not self.is_openai_compatible and model_lower.startswith("openrouter/")
         self.is_orcarouter = self.provider == "orcarouter" or (
             not self.is_openai_compatible and model_lower.startswith("orcarouter/")
@@ -243,6 +255,10 @@ class ProviderConfig:
             if not LITELLM_AVAILABLE:
                 raise ImportError("LiteLLM is required for OrcaRouter. Install with: pip install litellm")
             self.model = self._normalize_orcarouter_model_name(model)
+        elif self.is_apple_fm:
+            # On-device Foundation Models. Keep the apple-fm/ prefix so the
+            # request handler can dispatch without LiteLLM or an API key.
+            self.model = model if model_lower.startswith("apple-fm/") else f"apple-fm/{model or 'system'}"
         elif self.is_gemini and GOOGLE_GENAI_AVAILABLE:
             # Google AI Studio (uses Google SDK directly)
             self.use_google_sdk = True
@@ -313,6 +329,7 @@ class ProviderConfig:
           service account or Workload Identity, with no key file on disk
           at all.
         - Ollama: No API key needed (local)
+        - Apple Foundation Models: No API key needed (on-device)
         - Azure: Falls back to Entra ID (``az login``) when no API key is set
         """
         if api_key is not None:
@@ -322,6 +339,8 @@ class ProviderConfig:
         if self.is_vertex:
             return None
         elif self.is_ollama:
+            return None
+        elif self.is_apple_fm:
             return None
         elif self.is_bedrock_mantle:
             # SigV4 signing uses ambient AWS credentials, not an API key.
@@ -415,6 +434,7 @@ class ProviderConfig:
             and not self.is_bedrock_mantle
             and not self.is_ollama
             and not self.is_vertex
+            and not self.is_apple_fm
             and not self.api_key
         ):
             if self.is_azure:
