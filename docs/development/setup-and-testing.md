@@ -184,10 +184,13 @@ This project publishes a `.pre-commit-hooks.yaml` so other repos can use Skill S
 # In the consuming repo's .pre-commit-config.yaml
 repos:
   - repo: https://github.com/cisco-ai-defense/skill-scanner
-    rev: v1.0.0
+    rev: 2.2.0
     hooks:
       - id: skill-scanner
 ```
+
+Set `"use_llm": true` in the consuming repo's `.skill_scannerrc` so the hook runs the LLM judge, as
+the recommended setups do (see [Integrations](integrations.md#using-pre-commit-framework)).
 
 The hook entry point is `skill-scanner-pre-commit` (defined in `pyproject.toml`).
 It computes staged paths internally, maps each file to the nearest parent
