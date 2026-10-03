@@ -19,7 +19,9 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
+from urllib.parse import unquote, unquote_to_bytes, urlsplit
 
 import pytest
 
@@ -379,6 +381,119 @@ def test_sarif_reporter_uri_unchanged_when_skill_outside_scan_root(scan_result: 
     assert "scripts/decoder.py" in uris
     for uri in uris:
         assert ".." not in uri
+
+
+@pytest.mark.parametrize(
+    ("filename", "encoded"),
+    [
+        ("release notes.py", "release%20notes.py"),
+        ("helper#1.py", "helper%231.py"),
+        ("helper?draft.py", "helper%3Fdraft.py"),
+        ("literal%20name.py", "literal%2520name.py"),
+        ("文档.py", "%E6%96%87%E6%A1%A3.py"),
+    ],
+)
+def test_sarif_reporter_encodes_filename_characters(tmp_path, monkeypatch, filename, encoded):
+    monkeypatch.chdir(tmp_path)
+    finding = _sample_findings()[2]
+    finding.file_path = f"scripts/{filename}"
+    result = ScanResult(
+        skill_name="docs",
+        skill_directory=str(tmp_path / "skills" / "docs"),
+        findings=[finding],
+    )
+
+    output = SARIFReporter().generate_report(result)
+    uri = _result_uris(output)[0]
+
+    assert uri == f"skills/docs/scripts/{encoded}"
+    artifact = json.loads(output)["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]
+    assert artifact["uriBaseId"] == "%SRCROOT%"
+    parsed = urlsplit(uri)
+    assert not parsed.query
+    assert not parsed.fragment
+    assert unquote(parsed.path) == f"skills/docs/scripts/{filename}"
+
+
+@pytest.mark.parametrize("in_skill_directory", [True, False])
+def test_sarif_reporter_preserves_surrogate_escaped_path_bytes(tmp_path, monkeypatch, in_skill_directory):
+    """Undecodable filesystem bytes must not prevent report generation."""
+    monkeypatch.chdir(tmp_path)
+    skill_name = "docs\udcff" if in_skill_directory else "docs"
+    filename = "helper.py" if in_skill_directory else "helper\udcff.py"
+    finding = _sample_findings()[2]
+    finding.file_path = f"scripts/{filename}"
+    result = ScanResult(
+        skill_name=skill_name,
+        skill_directory=str(tmp_path / "skills" / skill_name),
+        findings=[finding],
+    )
+
+    uri = _result_uris(SARIFReporter().generate_report(result))[0]
+
+    assert uri.isascii()
+    parsed = urlsplit(uri)
+    assert not parsed.query
+    assert not parsed.fragment
+    assert unquote_to_bytes(parsed.path) == os.fsencode(f"skills/{skill_name}/scripts/{filename}")
+
+
+@pytest.mark.parametrize("inside_scan_root", [True, False])
+def test_sarif_reporter_encodes_paths_inside_and_outside_scan_root(tmp_path, monkeypatch, inside_scan_root):
+    monkeypatch.chdir(tmp_path)
+    skill_dir = tmp_path / "skills" / "docs #1" if inside_scan_root else tmp_path.parent / "external"
+    finding = _sample_findings()[2]
+    finding.file_path = "scripts/release #1.py"
+    result = ScanResult(skill_name="docs", skill_directory=str(skill_dir), findings=[finding])
+
+    uri = _result_uris(SARIFReporter().generate_report(result))[0]
+
+    prefix = "skills/docs%20%231/" if inside_scan_root else ""
+    assert uri == prefix + "scripts/release%20%231.py"
+
+
+def test_sarif_reporter_encodes_default_manifest_path_in_aggregate_report(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    finding = _sample_findings()[2]
+    finding.file_path = None
+    report = Report()
+    report.add_scan_result(
+        ScanResult(skill_name="docs", skill_directory=str(tmp_path / "skills" / "docs #1"), findings=[finding])
+    )
+
+    assert _result_uris(SARIFReporter().generate_report(report)) == ["skills/docs%20%231/SKILL.md"]
+
+
+def test_sarif_reporter_encodes_cross_skill_finding_path():
+    finding = _sample_findings()[2]
+    finding.file_path = "skills/docs #1/SKILL.md"
+    report = Report(cross_skill_findings=[finding])
+
+    assert _result_uris(SARIFReporter().generate_report(report)) == ["skills/docs%20%231/SKILL.md"]
+
+
+@pytest.mark.parametrize("report_kind", ["single", "aggregate", "cross_skill"])
+def test_sarif_reporter_absolute_path_is_a_file_uri(tmp_path, report_kind):
+    """Absolute artifacts must be file URIs without a relative path base."""
+    finding = _sample_findings()[2]
+    finding.file_path = str(tmp_path / "release #1.py")
+    result = ScanResult(skill_name="docs", skill_directory=str(tmp_path), findings=[finding])
+    if report_kind == "single":
+        data = result
+    elif report_kind == "aggregate":
+        data = Report()
+        data.add_scan_result(result)
+    else:
+        data = Report(cross_skill_findings=[finding])
+
+    output = SARIFReporter().generate_report(data)
+    uri = _result_uris(output)[0]
+
+    assert uri == (tmp_path / "release #1.py").as_uri()
+    assert urlsplit(uri).scheme == "file"
+    assert not urlsplit(uri).fragment
+    artifact = json.loads(output)["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]
+    assert "uriBaseId" not in artifact
 
 
 def _report_with_suppressions() -> Report:
