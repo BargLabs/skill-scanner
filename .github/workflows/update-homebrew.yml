@@ -52,10 +52,12 @@ jobs:
       run:
         shell: bash
     steps:
-      - name: Checkout exact release tag
+      # The generator reads only PyPI metadata and the hash-verified release
+      # sdist, never this tree, so run the current generator: a fix to it then
+      # applies to every release's formula, not only to later releases.
+      - name: Checkout formula tooling at the workflow ref
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.resolve-release.outputs.release_sha }}
           fetch-depth: 0
 
       - name: Install uv
@@ -104,6 +106,8 @@ jobs:
           grep -F 'resource.stage(wheelhouse)' Formula/skill-scanner.rb
           grep -F 'venv.pip_install dependency_wheels.join("\n"), build_isolation: false' Formula/skill-scanner.rb
           grep -F 'venv.pip_install_and_link buildpath, build_isolation: false' Formula/skill-scanner.rb
+          grep -Fx '  preserve_rpath' Formula/skill-scanner.rb
+          grep -F 'system "unzip", "-q", wheel, "skill_scanner/core/cel/_bin/*", "-d", helper_dir' Formula/skill-scanner.rb
           if grep -F 'resource.cached_download' Formula/skill-scanner.rb; then
             echo "Generated formula must stage wheels under their valid distribution filenames" >&2
             exit 1
@@ -158,12 +162,20 @@ jobs:
           HOMEBREW_NO_AUTO_UPDATE: "1"
         run: |
           test "$(uname -m)" = "${{ matrix.machine }}"
-          brew install --build-from-source generated-formula/skill-scanner.rb
+          # GitHub's Intel runners ship python.org Python 3.12 symlinks in
+          # /usr/local/bin, which block linking Homebrew's python@3.12 and leave
+          # its pip unusable; take the links over before installing.
+          brew install python@3.12 || brew link --overwrite python@3.12
+          # Homebrew refuses formulae outside a tap, so install from a throwaway local tap.
+          brew tap-new --no-git local/skill-scanner
+          tap_dir="$(brew --repository local/skill-scanner)"
+          install -m 644 generated-formula/skill-scanner.rb "$tap_dir/Formula/skill-scanner.rb"
+          brew install --build-from-source local/skill-scanner/skill-scanner
 
       - name: Validate packaged helper architecture and rules
         shell: bash
         run: |
-          prefix="$(brew --prefix skill-scanner)"
+          prefix="$(brew --prefix local/skill-scanner/skill-scanner)"
           helper_root="$prefix/libexec"
           helper_count="$(find "$helper_root" -type f -name 'skill-scanner-cel-go-darwin-*' | wc -l | tr -d ' ')"
           test "$helper_count" = 1
@@ -186,7 +198,7 @@ jobs:
           assert helper["toolchain_version"] == "go1.27.1"
           PY
           "$prefix/bin/skill-scanner" validate-rules
-          brew test skill-scanner
+          brew test local/skill-scanner/skill-scanner
 
   commit-formula:
     name: Open a pull request with the qualified formula
