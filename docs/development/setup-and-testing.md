@@ -264,8 +264,10 @@ carry no `v` prefix (`2.2.0`, not `v2.2.0`).
    PyPI must list five platform wheels and the sdist.
 
 6. Update the Homebrew formula. The workflow builds and smoke-installs it on macOS ARM and Intel,
-   then opens a pull request (or prints a compare link if Actions may not open pull requests in
-   this repository). Merge that pull request:
+   then pushes a `chore/homebrew-formula-<version>` branch. The organization does not let GitHub
+   Actions open pull requests, so open one from the compare link the run prints, then approve and
+   merge it. (If that policy changes, the workflow opens the pull request itself and dispatches the
+   unit tests on it.)
 
    ```bash
    gh workflow run update-homebrew.yml -R cisco-ai-defense/skill-scanner -f version=2.2.0
