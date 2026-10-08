@@ -184,7 +184,7 @@ This project publishes a `.pre-commit-hooks.yaml` so other repos can use Skill S
 # In the consuming repo's .pre-commit-config.yaml
 repos:
   - repo: https://github.com/cisco-ai-defense/skill-scanner
-    rev: 2.2.1
+    rev: 2.2.2
     hooks:
       - id: skill-scanner
 ```
@@ -239,8 +239,8 @@ carry no `v` prefix (`2.2.0`, not `v2.2.0`).
    publishes it; it cannot attach them to a release that is already published.
 
    ```bash
-   git tag 2.2.0 <main-sha> && git push origin 2.2.0
-   gh release create 2.2.0 -R cisco-ai-defense/skill-scanner --draft --verify-tag \
+   git tag 2.2.2 <main-sha> && git push origin 2.2.2
+   gh release create 2.2.2 -R cisco-ai-defense/skill-scanner --draft --verify-tag \
      --generate-notes --notes-start-tag <previous-tag>
    ```
 
@@ -249,15 +249,15 @@ carry no `v` prefix (`2.2.0`, not `v2.2.0`).
 4. Publish to PyPI and watch the run:
 
    ```bash
-   gh workflow run release.yml -R cisco-ai-defense/skill-scanner --ref main -f version=2.2.0
+   gh workflow run release.yml -R cisco-ai-defense/skill-scanner --ref main -f version=2.2.2
    gh run watch -R cisco-ai-defense/skill-scanner
    ```
 
 5. Verify the release:
 
    ```bash
-   gh release view 2.2.0 -R cisco-ai-defense/skill-scanner --json assets --jq '.assets[].name'
-   uvx --from cisco-ai-skill-scanner==2.2.1 skill-scanner --version
+   gh release view 2.2.2 -R cisco-ai-defense/skill-scanner --json assets --jq '.assets[].name'
+   uvx --from cisco-ai-skill-scanner==2.2.2 skill-scanner --version
    ```
 
    The assets must include `requirements.txt`, `sbom.cdx.json` and the `cel-go-*.json` files, and
