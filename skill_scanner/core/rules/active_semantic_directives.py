@@ -120,9 +120,13 @@ _NEGATED_ACTION_RE = re.compile(
     r"\b(?:do\s+not|don't|must\s+not|must\s+never|should\s+not|should\s+never|never|"
     r"avoid(?:s|ed|ing)?|prevent(?:s|ed|ing)?|prohibit(?:s|ed|ing)?|block(?:s|ed|ing)?)\s+"
     r"(?:(?:ever|automatically|directly|attempt(?:s|ed|ing)?\s+to|the)\s+){0,3}"
-    r"(?:capture|collect|deploy|destroy|disable|download|encrypt|execute|exfiltrate|fetch|gather|"
-    r"harvest|install|launch|lock|mine|post|put|read|retrieve|run|send|siphon|start|transmit|"
-    r"upload|wipe)\b",
+    r"(?:captur(?:e|es|ed|ing)|collect(?:s|ed|ing)?|deploy(?:s|ed|ing)?|destroy(?:s|ed|ing)?|"
+    r"disabl(?:e|es|ed|ing)|download(?:s|ed|ing)?|encrypt(?:s|ed|ing)?|execut(?:e|es|ed|ing)|"
+    r"exfiltrat(?:e|es|ed|ing)|fetch(?:es|ed|ing)?|gather(?:s|ed|ing)?|harvest(?:s|ed|ing)?|"
+    r"install(?:s|ed|ing)?|launch(?:es|ed|ing)?|lock(?:s|ed|ing)?|min(?:e|es|ed|ing)|post(?:s|ed|ing)?|"
+    r"put(?:s|ting)?|read(?:s|ing)?|retriev(?:e|es|ed|ing)|run(?:s|ning)?|send(?:s|ing)?|"
+    r"siphon(?:s|ed|ing)?|start(?:s|ed|ing)?|transmit(?:s|ted|ting)?|upload(?:s|ed|ing)?|"
+    r"wip(?:e|es|ed|ing))\b",
     re.IGNORECASE,
 )
 _HELPER_COMMAND_RE = re.compile(
@@ -251,6 +255,7 @@ _EXPLICIT_DESTINATION_RE = re.compile(
 # "sends"), not narration ("sending preview..."), and nothing between them may
 # exclude the file or start a new markdown section.
 _DIRECTIVE_TRANSFER_RE = re.compile(r"(?:exfiltrate|forward|post|send|siphon|transmit|upload)s?", re.IGNORECASE)
+_IMPLICIT_TRANSFER_OBJECT_RE = re.compile(r"\s*to\s*", re.IGNORECASE)
 _BRIDGE_BREAK_RE = re.compile(r"\b(?:but|except|excluding|never|not|without)\b|(?:^|\s)#{1,6}\s", re.IGNORECASE)
 
 
@@ -557,13 +562,23 @@ def _credential_file_transfer(text: str) -> re.Match[str] | None:
                 flow_end = transfer.end()
             else:
                 continue
+            # A destination after the next transfer verb belongs to that transfer, not this one
+            # ("send <file> to a local backup, then send status to <url>").
+            next_transfer = min((other.start() for other in transfers if other.start() >= flow_end), default=None)
             for destination in destinations:
                 if destination.start() < flow_end or destination.start() - flow_end > 400:
                     continue
+                if next_transfer is not None and destination.start() > next_transfer:
+                    continue
                 if flow_end == transfer.end():
                     transfer_object = text[transfer.end() : destination.start()]
+                    # "read <file>, then send to <url>": the transfer has no object of its own, so it
+                    # refers back to the file.
+                    implicit_object = _IMPLICIT_TRANSFER_OBJECT_RE.fullmatch(transfer_object) is not None
                     if not (
-                        _SENSITIVE_REFERENCE_RE.search(transfer_object) or _CREDENTIAL_FILE_RE.search(transfer_object)
+                        implicit_object
+                        or _SENSITIVE_REFERENCE_RE.search(transfer_object)
+                        or _CREDENTIAL_FILE_RE.search(transfer_object)
                     ):
                         continue
                 return source
