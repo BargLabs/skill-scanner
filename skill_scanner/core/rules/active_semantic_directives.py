@@ -253,8 +253,11 @@ _EXPLICIT_DESTINATION_RE = re.compile(
 )
 # When the verb precedes the file, the verb must read as a directive ("send",
 # "sends"), not narration ("sending preview..."), and nothing between them may
-# exclude the file or start a new markdown section.
-_DIRECTIVE_TRANSFER_RE = re.compile(r"(?:exfiltrate|forward|post|send|siphon|transmit|upload)s?", re.IGNORECASE)
+# exclude the file or start a new markdown section. A transfer with no object of
+# its own ("..., then send to <url>") must be the bare imperative: "sends to" and
+# "was sent to" narrate, and have no directive object to refer back to the file.
+_IMPERATIVE_TRANSFER_RE = re.compile(r"exfiltrate|forward|post|send|siphon|transmit|upload", re.IGNORECASE)
+_DIRECTIVE_TRANSFER_RE = re.compile(rf"(?:{_IMPERATIVE_TRANSFER_RE.pattern})s?", re.IGNORECASE)
 _IMPLICIT_TRANSFER_OBJECT_RE = re.compile(r"\s*to\s*", re.IGNORECASE)
 _BRIDGE_BREAK_RE = re.compile(r"\b(?:but|except|excluding|never|not|without)\b|(?:^|\s)#{1,6}\s", re.IGNORECASE)
 
@@ -574,7 +577,10 @@ def _credential_file_transfer(text: str) -> re.Match[str] | None:
                     transfer_object = text[transfer.end() : destination.start()]
                     # "read <file>, then send to <url>": the transfer has no object of its own, so it
                     # refers back to the file.
-                    implicit_object = _IMPLICIT_TRANSFER_OBJECT_RE.fullmatch(transfer_object) is not None
+                    implicit_object = (
+                        _IMPLICIT_TRANSFER_OBJECT_RE.fullmatch(transfer_object) is not None
+                        and _IMPERATIVE_TRANSFER_RE.fullmatch(transfer.group(0)) is not None
+                    )
                     if not (
                         implicit_object
                         or _SENSITIVE_REFERENCE_RE.search(transfer_object)
